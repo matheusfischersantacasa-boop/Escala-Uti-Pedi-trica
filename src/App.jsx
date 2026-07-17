@@ -57,6 +57,30 @@ function fmtMoney(v) {
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 20, fontFamily: "monospace", fontSize: 13, color: "#b91c1c", background: "#fff1f2" }}>
+          <div style={{ fontWeight: "bold", marginBottom: 8 }}>Erro ao carregar esta aba:</div>
+          <div>{String(this.state.error && this.state.error.message)}</div>
+          <div style={{ marginTop: 12, whiteSpace: "pre-wrap", fontSize: 11, color: "#7f1d1d" }}>
+            {this.state.error && this.state.error.stack}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function EscalaUtiBApp() {
   const [tab, setTab] = useState("novo");
   const [entries, setEntries] = useState({});
@@ -279,53 +303,55 @@ export default function EscalaUtiBApp() {
       </div>
 
       <div className="max-w-2xl mx-auto px-4 py-4">
-        {loading ? (
-          <div className="flex items-center justify-center gap-2 text-slate-500 py-16">
-            <Loader2 className="animate-spin" size={18} /> Carregando…
-          </div>
-        ) : tab === "novo" ? (
-          <NovoLancamento
-            form={form}
-            setForm={setForm}
-            formInfo={formInfo}
-            updateRole={updateRole}
-            addUtiARow={addUtiARow}
-            updateUtiARow={updateUtiARow}
-            removeUtiARow={removeUtiARow}
-            handleSave={handleSave}
-            handleCopyDay={handleCopyDay}
-            saving={saving}
-            saveMsg={saveMsg}
-            hasExisting={!!entries[form.date]}
-          />
-        ) : tab === "historico" ? (
-          <Historico
-            sortedDates={sortedDates}
-            entries={entries}
-            onEdit={loadForEdit}
-            onDelete={handleDelete}
-            onExport={handleExportAll}
-            onImport={() => {
-              setShowImport(true);
-              setShowExport(false);
-            }}
-            showExport={showExport}
-            showImport={showImport}
-            importText={importText}
-            setImportText={setImportText}
-            handleImportAll={handleImportAll}
-            ioMsg={ioMsg}
-            exportText={JSON.stringify(entries, null, 2)}
-          />
-        ) : (
-          <Resumo
-            summaryRows={summaryRows}
-            rateWeekday={rateWeekday}
-            rateWeekend={rateWeekend}
-            setRateWeekday={setRateWeekday}
-            setRateWeekend={setRateWeekend}
-          />
-        )}
+        <ErrorBoundary key={tab}>
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 text-slate-500 py-16">
+              <Loader2 className="animate-spin" size={18} /> Carregando…
+            </div>
+          ) : tab === "novo" ? (
+            <NovoLancamento
+              form={form}
+              setForm={setForm}
+              formInfo={formInfo}
+              updateRole={updateRole}
+              addUtiARow={addUtiARow}
+              updateUtiARow={updateUtiARow}
+              removeUtiARow={removeUtiARow}
+              handleSave={handleSave}
+              handleCopyDay={handleCopyDay}
+              saving={saving}
+              saveMsg={saveMsg}
+              hasExisting={!!entries[form.date]}
+            />
+          ) : tab === "historico" ? (
+            <Historico
+              sortedDates={sortedDates}
+              entries={entries}
+              onEdit={loadForEdit}
+              onDelete={handleDelete}
+              onExport={handleExportAll}
+              onImport={() => {
+                setShowImport(true);
+                setShowExport(false);
+              }}
+              showExport={showExport}
+              showImport={showImport}
+              importText={importText}
+              setImportText={setImportText}
+              handleImportAll={handleImportAll}
+              ioMsg={ioMsg}
+              exportText={JSON.stringify(entries, null, 2)}
+            />
+          ) : (
+            <Resumo
+              summaryRows={summaryRows}
+              rateWeekday={rateWeekday}
+              rateWeekend={rateWeekend}
+              setRateWeekday={setRateWeekday}
+              setRateWeekend={setRateWeekend}
+            />
+          )}
+        </ErrorBoundary>
       </div>
     </div>
   );
@@ -722,4 +748,3 @@ function Resumo({ summaryRows, rateWeekday, rateWeekend, setRateWeekday, setRate
   );
 }
 }
-  
