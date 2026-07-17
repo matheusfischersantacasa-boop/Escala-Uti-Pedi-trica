@@ -34,8 +34,6 @@ function dateInfo(iso) {
 }
 
 function rowHours(row) {
-  // horas is the source of truth; but if it's empty and "turno" only contains
-  // a plain number (common mistake), recover the value from there instead.
   const direct = parseFloat(String(row.horas).replace(",", "."));
   if (!isNaN(direct)) return direct;
   const fromTurno = String(row.turno || "").trim();
@@ -108,9 +106,7 @@ export default function EscalaUtiBApp() {
               const parsed = JSON.parse(raw);
               loaded[parsed.date] = parsed;
             }
-          } catch (e) {
-            // skip unreadable key
-          }
+          } catch (e) {}
         }
       }
       setEntries(loaded);
@@ -180,9 +176,7 @@ export default function EscalaUtiBApp() {
     });
     try {
       localStorage.removeItem(`escala:${date}`);
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
   }
 
   async function handleCopyDay() {
@@ -356,6 +350,7 @@ export default function EscalaUtiBApp() {
     </div>
   );
 }
+
 function PersonPicker({ value, onChange, inputBg }) {
   const isPreset = PEOPLE_OPTIONS.includes(value);
   const [forceCustom, setForceCustom] = useState(value !== "" && !isPreset);
@@ -542,7 +537,10 @@ function NovoLancamento({ form, setForm, formInfo, updateRole, addUtiARow, updat
         </button>
       )}
     </div>
-  );function Historico({ sortedDates, entries, onEdit, onDelete, onExport, onImport, showExport, showImport, importText, setImportText, handleImportAll, ioMsg, exportText }) {
+  );
+}
+
+function Historico({ sortedDates, entries, onEdit, onDelete, onExport, onImport, showExport, showImport, importText, setImportText, handleImportAll, ioMsg, exportText }) {
   const [confirmDelete, setConfirmDelete] = useState(null);
 
   return (
@@ -746,5 +744,4 @@ function Resumo({ summaryRows, rateWeekday, rateWeekend, setRateWeekday, setRate
       </p>
     </div>
   );
-}
 }
