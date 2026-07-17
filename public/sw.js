@@ -1,4 +1,4 @@
-const CACHE_NAME = "escala-uti-b-v1";
+const CACHE_NAME = "escala-uti-b-v2";
 const CORE_ASSETS = ["/", "/index.html", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
