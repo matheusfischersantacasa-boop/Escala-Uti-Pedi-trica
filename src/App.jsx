@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, Trash2, Save, Pencil, ClipboardList, Table2, CalendarDays, Check, X, Loader2 } from "lucide-react";
+import { Plus, Trash2, Save, Pencil, ClipboardList, Table2, CalendarDays, Check, X, Loader2, FileDown } from "lucide-react";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 const ROLES = [
   { key: "diarismo", label: "Diarismo", horas: 4 },
@@ -43,16 +45,58 @@ function rowHours(row) {
   return NaN;
 }
 
-function emptyForm(date) {
-  return { date, diarismo: "", manha: "", tarde: "", noite: "", utiA: [] };
+function hasOverride(v) {
+  return v !== "" && v !== null && v !== undefined && !isNaN(parseFloat(v));
 }
 
-function emptyFormKeepShape(f) {
-  return { date: f.date, diarismo: "", manha: "", tarde: "", noite: "", utiA: [] };
+function shiftValue(horas, isWeekend, valorOverride, rateWeekday, rateWeekend) {
+  if (hasOverride(valorOverride)) return parseFloat(valorOverride);
+  const h = parseFloat(horas) || 0;
+  return h * (isWeekend ? rateWeekend : rateWeekday);
+}
+
+function emptyForm(date) {
+  const roles = {};
+  ROLES.forEach((r) => {
+    roles[r.key] = { pessoa: "", horas: r.horas, valorOverride: "" };
+  });
+  return { date, ...roles, utiA: [] };
+}
+
+function migrateEntry(raw) {
+  const entry = { ...raw };
+  ROLES.forEach((r) => {
+    const val = entry[r.key];
+    if (typeof val === "string") {
+      entry[r.key] = { pessoa: val, horas: r.horas, valorOverride: "" };
+    } else if (val && typeof val === "object") {
+      entry[r.key] = {
+        pessoa: val.pessoa || "",
+        horas: val.horas === undefined || val.horas === null ? r.horas : val.horas,
+        valorOverride: val.valorOverride === undefined ? "" : val.valorOverride,
+      };
+    } else {
+      entry[r.key] = { pessoa: "", horas: r.horas, valorOverride: "" };
+    }
+  });
+  entry.utiA = (entry.utiA || []).map((row) => ({
+    id: row.id,
+    pessoa: row.pessoa || "",
+    turno: row.turno || "",
+    horas: row.horas === undefined || row.horas === null ? "" : row.horas,
+    valorOverride: row.valorOverride === undefined ? "" : row.valorOverride,
+  }));
+  return entry;
 }
 
 function fmtMoney(v) {
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function stripAccents(s) {
+  return String(s == null ? "" : s)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 class ErrorBoundary extends React.Component {
@@ -120,7 +164,7 @@ export default function EscalaUtiBApp() {
           try {
             const raw = localStorage.getItem(k);
             if (raw) {
-              const parsed = JSON.parse(raw);
+              const parsed = migrateEntry(JSON.parse(raw));
               loaded[parsed.date] = parsed;
             }
           } catch (e) {}
@@ -151,14 +195,14 @@ export default function EscalaUtiBApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.date]);
 
-  function updateRole(key, value) {
-    setForm((f) => ({ ...f, [key]: value }));
+  function updateRoleField(key, field, value) {
+    setForm((f) => ({ ...f, [key]: { ...f[key], [field]: value } }));
   }
 
   function addUtiARow() {
     setForm((f) => ({
       ...f,
-      utiA: [...f.utiA, { id: Date.now() + Math.random(), pessoa: "", turno: "", horas: "" }],
+      utiA: [...f.utiA, { id: Date.now() + Math.random(), pessoa: "", turno: "", horas: "", valorOverride: "" }],
     }));
   }
 
@@ -227,8 +271,12 @@ export default function EscalaUtiBApp() {
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error("formato inválido");
       }
-      setEntries((e) => ({ ...e, ...parsed }));
-      setIoMsg(`Importado! ${Object.keys(parsed).length} dia(s) adicionado(s)/atualizado(s).`);
+      const migrated = {};
+      Object.entries(parsed).forEach(([date, entry]) => {
+        migrated[date] = migrateEntry(entry);
+      });
+      setEntries((e) => ({ ...e, ...migrated }));
+      setIoMsg(`Importado! ${Object.keys(migrated).length} dia(s) adicionado(s)/atualizado(s).`);
       setImportText("");
       setShowImport(false);
     } catch (e) {
@@ -253,28 +301,43 @@ export default function EscalaUtiBApp() {
   const sortedDates = Object.keys(filteredEntries).sort((a, b) => (a < b ? 1 : -1));
 
   const summary = {};
-  function addToSummary(pessoa, horas, isWeekend) {
+  const personDetails = {};
+
+  function pushDetail(pessoa, date, dow, unidade, turno, horas, valor, isWeekend) {
     if (!pessoa || !pessoa.trim()) return;
     const key = pessoa.trim();
-    if (!summary[key]) summary[key] = { semana: 0, fds: 0 };
+    if (!personDetails[key]) personDetails[key] = [];
+    personDetails[key].push({ date, dow, unidade, turno, horas, valor, isWeekend });
+    if (!summary[key]) summary[key] = { semana: 0, fds: 0, valor: 0 };
     if (isWeekend) summary[key].fds += horas;
     else summary[key].semana += horas;
+    summary[key].valor += valor;
   }
+
   Object.values(filteredEntries).forEach((entry) => {
-    const { isWeekend } = dateInfo(entry.date);
-    ROLES.forEach((r) => addToSummary(entry[r.key], r.horas, isWeekend));
+    const { isWeekend, dowName } = dateInfo(entry.date);
+    ROLES.forEach((r) => {
+      const roleData = entry[r.key];
+      if (!roleData || !roleData.pessoa || !roleData.pessoa.trim()) return;
+      const horas = parseFloat(roleData.horas) || 0;
+      const valor = shiftValue(horas, isWeekend, roleData.valorOverride, rateWeekday, rateWeekend);
+      pushDetail(roleData.pessoa, entry.date, dowName, "UTI B", r.label, horas, valor, isWeekend);
+    });
     (entry.utiA || []).forEach((row) => {
-      const h = rowHours(row);
-      if (!isNaN(h)) addToSummary(row.pessoa, h, isWeekend);
+      const horas = rowHours(row);
+      if (isNaN(horas)) return;
+      const valor = shiftValue(horas, isWeekend, row.valorOverride, rateWeekday, rateWeekend);
+      pushDetail(row.pessoa, entry.date, dowName, "UTI A", row.turno || "—", horas, valor, isWeekend);
     });
   });
+
   const summaryRows = Object.entries(summary)
     .map(([pessoa, v]) => ({
       pessoa,
       semana: v.semana,
       fds: v.fds,
       total: v.semana + v.fds,
-      valor: v.semana * rateWeekday + v.fds * rateWeekend,
+      valor: v.valor,
     }))
     .sort((a, b) => b.total - a.total);
 
@@ -282,6 +345,9 @@ export default function EscalaUtiBApp() {
     (acc, r) => ({ horas: acc.horas + r.total, valor: acc.valor + r.valor }),
     { horas: 0, valor: 0 }
   );
+
+  const periodLabel =
+    periodStart && periodEnd ? `${dateInfo(periodStart).display} a ${dateInfo(periodEnd).display}` : "Todos os períodos";
 
   const formInfo = dateInfo(form.date);
 
@@ -336,7 +402,7 @@ export default function EscalaUtiBApp() {
               form={form}
               setForm={setForm}
               formInfo={formInfo}
-              updateRole={updateRole}
+              updateRoleField={updateRoleField}
               addUtiARow={addUtiARow}
               updateUtiARow={updateUtiARow}
               removeUtiARow={removeUtiARow}
@@ -384,6 +450,8 @@ export default function EscalaUtiBApp() {
               <Resumo
                 summaryRows={summaryRows}
                 grandTotal={grandTotal}
+                personDetails={personDetails}
+                periodLabel={periodLabel}
                 rateWeekday={rateWeekday}
                 rateWeekend={rateWeekend}
                 setRateWeekday={setRateWeekday}
@@ -509,21 +577,54 @@ function PersonPicker({ value, onChange, inputBg }) {
   );
 }
 
-function PersonSelect({ label, horas, value, onChange }) {
+function RoleEditor({ label, value, onChangeField }) {
+  const [showOverride, setShowOverride] = useState(hasOverride(value.valorOverride));
+
   return (
-    <div className="flex items-center gap-3 py-2.5 border-b border-slate-100 last:border-b-0">
-      <div className="w-20 shrink-0">
-        <div className="text-sm font-semibold text-slate-900">{label}</div>
-        <div className="text-xs text-slate-400 tabular-nums">{horas}h</div>
+    <div className="py-2.5 border-b border-slate-100 last:border-b-0 space-y-1.5">
+      <div className="flex items-center gap-3">
+        <div className="w-20 shrink-0">
+          <div className="text-sm font-semibold text-slate-900">{label}</div>
+          <div className="flex items-center gap-1 mt-0.5">
+            <input
+              type="number"
+              step="0.5"
+              value={value.horas}
+              onChange={(e) => onChangeField("horas", e.target.value === "" ? "" : parseFloat(e.target.value))}
+              className="w-12 text-xs text-slate-600 border border-slate-200 rounded px-1 py-1 tabular-nums focus:outline-none focus:ring-2 focus:ring-teal-600"
+            />
+            <span className="text-xs text-slate-400">h</span>
+          </div>
+        </div>
+        <div className="flex-1 min-w-0">
+          <PersonPicker value={value.pessoa} onChange={(v) => onChangeField("pessoa", v)} />
+        </div>
       </div>
-      <div className="flex-1 min-w-0">
-        <PersonPicker value={value} onChange={onChange} />
-      </div>
+      <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={showOverride}
+          onChange={(e) => {
+            setShowOverride(e.target.checked);
+            if (!e.target.checked) onChangeField("valorOverride", "");
+          }}
+        />
+        Valor manual (combinado à parte)
+      </label>
+      {showOverride && (
+        <input
+          type="number"
+          value={value.valorOverride}
+          onChange={(e) => onChangeField("valorOverride", e.target.value)}
+          placeholder="Valor total do plantão em R$"
+          className="w-full border-2 border-amber-200 bg-amber-50 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+        />
+      )}
     </div>
   );
 }
 
-function NovoLancamento({ form, setForm, formInfo, updateRole, addUtiARow, updateUtiARow, removeUtiARow, handleSave, handleCopyDay, saving, saveMsg, hasExisting }) {
+function NovoLancamento({ form, setForm, formInfo, updateRoleField, addUtiARow, updateUtiARow, removeUtiARow, handleSave, handleCopyDay, saving, saveMsg, hasExisting }) {
   const isError = saveMsg.startsWith("Erro") || saveMsg.startsWith("Não foi");
   return (
     <div className="space-y-4">
@@ -533,7 +634,7 @@ function NovoLancamento({ form, setForm, formInfo, updateRole, addUtiARow, updat
           <input
             type="date"
             value={form.date}
-            onChange={(e) => setForm((f) => ({ ...emptyFormKeepShape(f), date: e.target.value }))}
+            onChange={(e) => setForm(emptyForm(e.target.value))}
             className="border border-slate-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
           />
           <span
@@ -554,7 +655,12 @@ function NovoLancamento({ form, setForm, formInfo, updateRole, addUtiARow, updat
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
         <div className="text-xs tracking-wider uppercase text-teal-700 font-bold mb-1">UTI B — dia completo (24h)</div>
         {ROLES.map((r) => (
-          <PersonSelect key={r.key} label={r.label} horas={r.horas} value={form[r.key]} onChange={(v) => updateRole(r.key, v)} />
+          <RoleEditor
+            key={`${r.key}-${form.date}`}
+            label={r.label}
+            value={form[r.key]}
+            onChangeField={(field, v) => updateRoleField(r.key, field, v)}
+          />
         ))}
       </div>
 
@@ -574,41 +680,7 @@ function NovoLancamento({ form, setForm, formInfo, updateRole, addUtiARow, updat
         ) : (
           <div className="space-y-3">
             {form.utiA.map((row) => (
-              <div key={row.id} className="bg-slate-50 border border-slate-200 rounded-md p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-slate-400">Cobertura</span>
-                  <button type="button" onClick={() => removeUtiARow(row.id)} className="text-rose-500 hover:text-rose-700 p-1">
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-                <div className="grid grid-cols-2 gap-2 mb-2">
-                  <div>
-                    <label className="text-xs text-slate-400">Nome</label>
-                    <div className="mt-0.5">
-                      <PersonPicker value={row.pessoa} onChange={(v) => updateUtiARow(row.id, "pessoa", v)} inputBg="bg-white" />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-xs font-semibold text-teal-700">Horas *</label>
-                    <input
-                      value={row.horas}
-                      onChange={(e) => updateUtiARow(row.id, "horas", e.target.value.replace(/[^0-9.,]/g, ""))}
-                      placeholder="Ex: 12"
-                      inputMode="decimal"
-                      className="w-full mt-0.5 bg-white border-2 border-teal-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="text-xs text-slate-400">Descrição do turno (opcional)</label>
-                  <input
-                    value={row.turno}
-                    onChange={(e) => updateUtiARow(row.id, "turno", e.target.value)}
-                    placeholder="Ex: 24h, 07:30-15:30, horário Dra Regina…"
-                    className="w-full mt-0.5 bg-white border border-slate-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
-                  />
-                </div>
-              </div>
+              <UtiARow key={row.id} row={row} onChange={updateUtiARow} onRemove={removeUtiARow} />
             ))}
           </div>
         )}
@@ -640,6 +712,67 @@ function NovoLancamento({ form, setForm, formInfo, updateRole, addUtiARow, updat
         >
           Copiar dados deste dia (backup)
         </button>
+      )}
+    </div>
+  );
+}
+
+function UtiARow({ row, onChange, onRemove }) {
+  const [showOverride, setShowOverride] = useState(hasOverride(row.valorOverride));
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-md p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-slate-400">Cobertura</span>
+        <button type="button" onClick={() => onRemove(row.id)} className="text-rose-500 hover:text-rose-700 p-1">
+          <Trash2 size={16} />
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="text-xs text-slate-400">Nome</label>
+          <div className="mt-0.5">
+            <PersonPicker value={row.pessoa} onChange={(v) => onChange(row.id, "pessoa", v)} inputBg="bg-white" />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-teal-700">Horas *</label>
+          <input
+            value={row.horas}
+            onChange={(e) => onChange(row.id, "horas", e.target.value.replace(/[^0-9.,]/g, ""))}
+            placeholder="Ex: 12"
+            inputMode="decimal"
+            className="w-full mt-0.5 bg-white border-2 border-teal-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
+          />
+        </div>
+      </div>
+      <div>
+        <label className="text-xs text-slate-400">Descrição do turno (opcional)</label>
+        <input
+          value={row.turno}
+          onChange={(e) => onChange(row.id, "turno", e.target.value)}
+          placeholder="Ex: 24h, 07:30-15:30, horário Dra Regina…"
+          className="w-full mt-0.5 bg-white border border-slate-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
+        />
+      </div>
+      <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={showOverride}
+          onChange={(e) => {
+            setShowOverride(e.target.checked);
+            if (!e.target.checked) onChange(row.id, "valorOverride", "");
+          }}
+        />
+        Valor manual (combinado à parte)
+      </label>
+      {showOverride && (
+        <input
+          type="number"
+          value={row.valorOverride}
+          onChange={(e) => onChange(row.id, "valorOverride", e.target.value)}
+          placeholder="Valor total do plantão em R$"
+          className="w-full bg-white border-2 border-amber-200 rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+        />
       )}
     </div>
   );
@@ -708,7 +841,7 @@ function Historico({ sortedDates, entries, onEdit, onDelete, onExport, onImport,
         sortedDates.map((date) => {
         const entry = entries[date];
         const info = dateInfo(date);
-        const filledRoles = ROLES.filter((r) => entry[r.key] && entry[r.key].trim());
+        const filledRoles = ROLES.filter((r) => entry[r.key] && entry[r.key].pessoa && entry[r.key].pessoa.trim());
         return (
           <div key={date} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-100">
@@ -761,9 +894,12 @@ function Historico({ sortedDates, entries, onEdit, onDelete, onExport, onImport,
                   {filledRoles.map((r) => (
                     <div key={r.key} className="flex justify-between">
                       <span className="text-slate-500">
-                        {r.label} <span className="text-slate-300">({r.horas}h)</span>
+                        {r.label}{" "}
+                        <span className="text-slate-300">
+                          ({entry[r.key].horas}h{hasOverride(entry[r.key].valorOverride) ? " · valor manual" : ""})
+                        </span>
                       </span>
-                      <span className="font-medium text-slate-800">{entry[r.key]}</span>
+                      <span className="font-medium text-slate-800">{entry[r.key].pessoa}</span>
                     </div>
                   ))}
                   {(entry.utiA || []).length > 0 && (
@@ -772,7 +908,12 @@ function Historico({ sortedDates, entries, onEdit, onDelete, onExport, onImport,
                       {entry.utiA.map((row) => (
                         <div key={row.id} className="flex justify-between">
                           <span className="text-slate-500">
-                            {row.turno || "—"} {!isNaN(rowHours(row)) ? <span className="text-slate-300">({rowHours(row)}h)</span> : null}
+                            {row.turno || "—"}{" "}
+                            {!isNaN(rowHours(row)) ? (
+                              <span className="text-slate-300">
+                                ({rowHours(row)}h{hasOverride(row.valorOverride) ? " · valor manual" : ""})
+                              </span>
+                            ) : null}
                           </span>
                           <span className="font-medium text-slate-800">{row.pessoa}</span>
                         </div>
@@ -790,11 +931,57 @@ function Historico({ sortedDates, entries, onEdit, onDelete, onExport, onImport,
   );
 }
 
-function Resumo({ summaryRows, grandTotal, rateWeekday, rateWeekend, setRateWeekday, setRateWeekend }) {
+function exportAllPdf(personDetails, periodLabel) {
+  const people = Object.keys(personDetails).sort();
+  if (people.length === 0) return false;
+  const doc = new jsPDF({ orientation: "landscape" });
+  people.forEach((pessoa, idx) => {
+    if (idx > 0) doc.addPage();
+    const rows = [...personDetails[pessoa]].sort((a, b) => (a.date < b.date ? -1 : 1));
+    doc.setFontSize(16);
+    doc.setTextColor(15, 23, 42);
+    doc.text(stripAccents(pessoa), 14, 15);
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text(stripAccents(periodLabel), 14, 21);
+
+    autoTable(doc, {
+      startY: 26,
+      head: [["Data", "Dia da semana", "Unidade", "Turno", "Horas", "Valor"]],
+      body: rows.map((r) => [
+        dateInfo(r.date).display,
+        stripAccents(r.dow),
+        r.unidade,
+        stripAccents(r.turno),
+        `${r.horas}h`,
+        fmtMoney(r.valor),
+      ]),
+      styles: { fontSize: 8, cellPadding: 2 },
+      headStyles: { fillColor: [15, 23, 42], textColor: 255 },
+      didParseCell: (data) => {
+        if (data.section === "body" && rows[data.row.index] && rows[data.row.index].isWeekend) {
+          data.cell.styles.fillColor = [220, 252, 231];
+        }
+      },
+    });
+
+    const totalHoras = rows.reduce((a, r) => a + r.horas, 0);
+    const totalValor = rows.reduce((a, r) => a + r.valor, 0);
+    const finalY = (doc.lastAutoTable ? doc.lastAutoTable.finalY : 26) + 8;
+    doc.setFontSize(11);
+    doc.setTextColor(15, 118, 110);
+    doc.text(`Total: ${totalHoras}h  ->  ${fmtMoney(totalValor)}`, 14, finalY);
+  });
+  const safeLabel = stripAccents(periodLabel).replace(/[^\w-]+/g, "_");
+  doc.save(`escala-uti-b_${safeLabel}.pdf`);
+  return true;
+}
+
+function Resumo({ summaryRows, grandTotal, personDetails, periodLabel, rateWeekday, rateWeekend, setRateWeekday, setRateWeekend }) {
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-        <div className="text-xs tracking-wider uppercase text-teal-700 font-bold mb-3">Valor por hora (estimativa)</div>
+        <div className="text-xs tracking-wider uppercase text-teal-700 font-bold mb-3">Valor por hora (padrão)</div>
         <div className="flex gap-3">
           <div className="flex-1">
             <label className="text-xs text-slate-400">Semana (R$/h)</label>
@@ -815,6 +1002,9 @@ function Resumo({ summaryRows, grandTotal, rateWeekday, rateWeekend, setRateWeek
             />
           </div>
         </div>
+        <p className="text-xs text-slate-400 mt-2">
+          Plantões com "valor manual" marcado usam o valor combinado, ignorando essas taxas.
+        </p>
       </div>
 
       <div className="bg-teal-700 rounded-xl shadow-sm p-4 text-white">
@@ -824,6 +1014,16 @@ function Resumo({ summaryRows, grandTotal, rateWeekday, rateWeekend, setRateWeek
           <span className="text-2xl font-bold tabular-nums">{fmtMoney(grandTotal.valor)}</span>
         </div>
       </div>
+
+      <button
+        type="button"
+        onClick={() => exportAllPdf(personDetails, periodLabel)}
+        disabled={summaryRows.length === 0}
+        className="w-full flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white font-semibold py-3 rounded-xl shadow-sm transition-colors"
+      >
+        <FileDown size={16} />
+        Exportar PDF (uma página por pessoa)
+      </button>
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100 text-xs tracking-wider uppercase text-teal-700 font-bold">
@@ -852,8 +1052,8 @@ function Resumo({ summaryRows, grandTotal, rateWeekday, rateWeekend, setRateWeek
         )}
       </div>
       <p className="text-xs text-slate-400 px-1">
-        Cálculo simples: sábado e domingo = fim de semana. Feriados e regras especiais (ex: sexta à noite, taxas fixas) não são
-        aplicados automaticamente aqui — ajuste as taxas acima se precisar de uma estimativa rápida.
+        Cálculo: sábado, domingo e turnos marcados como "valor manual" seguem a combinação específica. Os demais usam as
+        taxas padrão acima. Ajuste manualmente para sexta à noite, feriados ou combinações especiais.
       </p>
     </div>
   );
