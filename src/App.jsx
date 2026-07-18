@@ -79,6 +79,21 @@ class ErrorBoundary extends React.Component {
   }
 }
 
+function firstDayOfMonth(offset) {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + offset);
+  return toISODate(d);
+}
+
+function lastDayOfMonth(offset) {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + offset + 1);
+  d.setDate(0);
+  return toISODate(d);
+}
+
 export default function EscalaUtiBApp() {
   const [tab, setTab] = useState("novo");
   const [entries, setEntries] = useState({});
@@ -92,6 +107,8 @@ export default function EscalaUtiBApp() {
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
   const [ioMsg, setIoMsg] = useState("");
+  const [periodStart, setPeriodStart] = useState(firstDayOfMonth(0));
+  const [periodEnd, setPeriodEnd] = useState(lastDayOfMonth(0));
 
   const loadAll = useCallback(() => {
     setLoading(true);
@@ -226,7 +243,14 @@ export default function EscalaUtiBApp() {
     setTab("novo");
   }
 
-  const sortedDates = Object.keys(entries).sort((a, b) => (a < b ? 1 : -1));
+  const filteredEntries = {};
+  Object.entries(entries).forEach(([date, entry]) => {
+    if (periodStart && date < periodStart) return;
+    if (periodEnd && date > periodEnd) return;
+    filteredEntries[date] = entry;
+  });
+
+  const sortedDates = Object.keys(filteredEntries).sort((a, b) => (a < b ? 1 : -1));
 
   const summary = {};
   function addToSummary(pessoa, horas, isWeekend) {
@@ -236,7 +260,7 @@ export default function EscalaUtiBApp() {
     if (isWeekend) summary[key].fds += horas;
     else summary[key].semana += horas;
   }
-  Object.values(entries).forEach((entry) => {
+  Object.values(filteredEntries).forEach((entry) => {
     const { isWeekend } = dateInfo(entry.date);
     ROLES.forEach((r) => addToSummary(entry[r.key], r.horas, isWeekend));
     (entry.utiA || []).forEach((row) => {
@@ -253,6 +277,11 @@ export default function EscalaUtiBApp() {
       valor: v.semana * rateWeekday + v.fds * rateWeekend,
     }))
     .sort((a, b) => b.total - a.total);
+
+  const grandTotal = summaryRows.reduce(
+    (acc, r) => ({ horas: acc.horas + r.total, valor: acc.valor + r.valor }),
+    { horas: 0, valor: 0 }
+  );
 
   const formInfo = dateInfo(form.date);
 
@@ -318,34 +347,110 @@ export default function EscalaUtiBApp() {
               hasExisting={!!entries[form.date]}
             />
           ) : tab === "historico" ? (
-            <Historico
-              sortedDates={sortedDates}
-              entries={entries}
-              onEdit={loadForEdit}
-              onDelete={handleDelete}
-              onExport={handleExportAll}
-              onImport={() => {
-                setShowImport(true);
-                setShowExport(false);
-              }}
-              showExport={showExport}
-              showImport={showImport}
-              importText={importText}
-              setImportText={setImportText}
-              handleImportAll={handleImportAll}
-              ioMsg={ioMsg}
-              exportText={JSON.stringify(entries, null, 2)}
-            />
+            <>
+              <PeriodFilter
+                periodStart={periodStart}
+                periodEnd={periodEnd}
+                setPeriodStart={setPeriodStart}
+                setPeriodEnd={setPeriodEnd}
+              />
+              <Historico
+                sortedDates={sortedDates}
+                entries={filteredEntries}
+                onEdit={loadForEdit}
+                onDelete={handleDelete}
+                onExport={handleExportAll}
+                onImport={() => {
+                  setShowImport(true);
+                  setShowExport(false);
+                }}
+                showExport={showExport}
+                showImport={showImport}
+                importText={importText}
+                setImportText={setImportText}
+                handleImportAll={handleImportAll}
+                ioMsg={ioMsg}
+                exportText={JSON.stringify(entries, null, 2)}
+              />
+            </>
           ) : (
-            <Resumo
-              summaryRows={summaryRows}
-              rateWeekday={rateWeekday}
-              rateWeekend={rateWeekend}
-              setRateWeekday={setRateWeekday}
-              setRateWeekend={setRateWeekend}
-            />
+            <>
+              <PeriodFilter
+                periodStart={periodStart}
+                periodEnd={periodEnd}
+                setPeriodStart={setPeriodStart}
+                setPeriodEnd={setPeriodEnd}
+              />
+              <Resumo
+                summaryRows={summaryRows}
+                grandTotal={grandTotal}
+                rateWeekday={rateWeekday}
+                rateWeekend={rateWeekend}
+                setRateWeekday={setRateWeekday}
+                setRateWeekend={setRateWeekend}
+              />
+            </>
           )}
         </ErrorBoundary>
+      </div>
+    </div>
+  );
+}
+
+function PeriodFilter({ periodStart, periodEnd, setPeriodStart, setPeriodEnd }) {
+  function applyMonth(offset) {
+    setPeriodStart(firstDayOfMonth(offset));
+    setPeriodEnd(lastDayOfMonth(offset));
+  }
+  function clearPeriod() {
+    setPeriodStart("");
+    setPeriodEnd("");
+  }
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-3">
+      <div className="text-xs tracking-wider uppercase text-teal-700 font-bold mb-2">Período</div>
+      <div className="flex gap-2 mb-2">
+        <div className="flex-1">
+          <label className="text-xs text-slate-400">De</label>
+          <input
+            type="date"
+            value={periodStart}
+            onChange={(e) => setPeriodStart(e.target.value)}
+            className="w-full mt-0.5 border border-slate-200 rounded-md px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
+          />
+        </div>
+        <div className="flex-1">
+          <label className="text-xs text-slate-400">Até</label>
+          <input
+            type="date"
+            value={periodEnd}
+            onChange={(e) => setPeriodEnd(e.target.value)}
+            className="w-full mt-0.5 border border-slate-200 rounded-md px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
+          />
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => applyMonth(-1)}
+          className="flex-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 py-1.5 rounded-md"
+        >
+          Mês anterior
+        </button>
+        <button
+          type="button"
+          onClick={() => applyMonth(0)}
+          className="flex-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 py-1.5 rounded-md"
+        >
+          Mês atual
+        </button>
+        <button
+          type="button"
+          onClick={clearPeriod}
+          className="flex-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 py-1.5 rounded-md"
+        >
+          Tudo
+        </button>
       </div>
     </div>
   );
@@ -597,7 +702,7 @@ function Historico({ sortedDates, entries, onEdit, onDelete, onExport, onImport,
 
       {sortedDates.length === 0 ? (
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-center text-slate-400">
-          Nenhum dia lançado ainda. Vá em "Lançar dia" para começar.
+          Nenhum dia lançado neste período.
         </div>
       ) : (
         sortedDates.map((date) => {
@@ -685,7 +790,7 @@ function Historico({ sortedDates, entries, onEdit, onDelete, onExport, onImport,
   );
 }
 
-function Resumo({ summaryRows, rateWeekday, rateWeekend, setRateWeekday, setRateWeekend }) {
+function Resumo({ summaryRows, grandTotal, rateWeekday, rateWeekend, setRateWeekday, setRateWeekend }) {
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
@@ -712,12 +817,20 @@ function Resumo({ summaryRows, rateWeekday, rateWeekend, setRateWeekday, setRate
         </div>
       </div>
 
+      <div className="bg-teal-700 rounded-xl shadow-sm p-4 text-white">
+        <div className="text-xs tracking-wider uppercase text-teal-200 font-bold mb-1">Total geral do período</div>
+        <div className="flex items-end justify-between">
+          <span className="text-sm text-teal-100">{grandTotal.horas}h no total</span>
+          <span className="text-2xl font-bold tabular-nums">{fmtMoney(grandTotal.valor)}</span>
+        </div>
+      </div>
+
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100 text-xs tracking-wider uppercase text-teal-700 font-bold">
           Total por pessoa
         </div>
         {summaryRows.length === 0 ? (
-          <div className="p-8 text-center text-slate-400">Sem dados lançados ainda.</div>
+          <div className="p-8 text-center text-slate-400">Sem dados lançados neste período.</div>
         ) : (
           <div className="divide-y divide-slate-100">
             {summaryRows.map((row) => (
