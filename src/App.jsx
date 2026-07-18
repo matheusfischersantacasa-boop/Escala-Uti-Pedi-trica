@@ -472,6 +472,7 @@ export default function EscalaUtiBApp() {
               <Historico
                 sortedDates={sortedDates}
                 entries={filteredEntries}
+                periodLabel={periodLabel}
                 onEdit={loadForEdit}
                 onDelete={handleDelete}
                 onExport={handleExportAll}
@@ -829,11 +830,69 @@ function UtiARow({ row, onChange, onRemove }) {
   );
 }
 
-function Historico({ sortedDates, entries, onEdit, onDelete, onExport, onImport, showExport, showImport, importText, setImportText, handleImportAll, ioMsg, exportText }) {
+function exportHistoricoPdf(sortedDates, entries, periodLabel) {
+  if (sortedDates.length === 0) return false;
+  const doc = new jsPDF({ orientation: "landscape" });
+  doc.setFontSize(16);
+  doc.setTextColor(15, 23, 42);
+  doc.text("Escala UTI B", 14, 15);
+  doc.setFontSize(9);
+  doc.setTextColor(100, 116, 139);
+  doc.text(stripAccents(periodLabel), 14, 21);
+
+  const orderedDates = [...sortedDates].sort();
+  const rowsMeta = orderedDates.map((date) => {
+    const entry = entries[date];
+    const info = dateInfo(date);
+    const cell = (key) => {
+      const r = entry[key];
+      if (!r || !r.pessoa || !r.pessoa.trim()) return "-";
+      return `${stripAccents(r.pessoa)} (${r.horas}h)`;
+    };
+    const utiARows = (entry.utiA || []).filter((r) => r.pessoa && r.pessoa.trim());
+    const utiA =
+      utiARows
+        .map((r) => `${stripAccents(r.pessoa)} - ${stripAccents(r.turno || "")} (${rowHours(r)}h)`)
+        .join("; ") || "-";
+    return {
+      cells: [info.display, stripAccents(info.dowName), cell("diarismo"), cell("manha"), cell("tarde"), cell("noite"), utiA],
+      isWeekend: info.isWeekend,
+    };
+  });
+
+  autoTable(doc, {
+    startY: 26,
+    head: [["Data", "Dia", "Diarismo", "Manhã", "Tarde", "Noite", "UTI A"]],
+    body: rowsMeta.map((r) => r.cells),
+    styles: { fontSize: 7.5, cellPadding: 2 },
+    headStyles: { fillColor: [15, 23, 42], textColor: 255 },
+    didParseCell: (data) => {
+      if (data.section === "body" && rowsMeta[data.row.index] && rowsMeta[data.row.index].isWeekend) {
+        data.cell.styles.fillColor = [220, 252, 231];
+      }
+    },
+  });
+
+  const safeLabel = stripAccents(periodLabel).replace(/[^\w-]+/g, "_");
+  doc.save(`escala-uti-b-historico_${safeLabel}.pdf`);
+  return true;
+}
+
+function Historico({ sortedDates, entries, periodLabel, onEdit, onDelete, onExport, onImport, showExport, showImport, importText, setImportText, handleImportAll, ioMsg, exportText }) {
   const [confirmDelete, setConfirmDelete] = useState(null);
 
   return (
     <div className="space-y-3">
+      <button
+        type="button"
+        onClick={() => exportHistoricoPdf(sortedDates, entries, periodLabel)}
+        disabled={sortedDates.length === 0}
+        className="w-full flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white font-semibold py-3 rounded-xl shadow-sm transition-colors"
+      >
+        <FileDown size={16} />
+        Exportar PDF da escala
+      </button>
+
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
         <div className="text-xs tracking-wider uppercase text-teal-700 font-bold mb-2">Backup manual</div>
         <p className="text-xs text-slate-500 mb-3">
