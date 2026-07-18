@@ -10,7 +10,7 @@ const ROLES = [
   { key: "noite", label: "Noite", horas: 12 },
 ];
 
-const PEOPLE_OPTIONS = ["Kgb", "Matheus", "Wagna", "Mulan", "Bianca", "Bianca Zago", "Nati", "Marcus", "Intensiped"];
+const PEOPLE_OPTIONS = ["Kgb", "Matheus", "Wagna", "Mulan", "Bianca", "Bianca Zago", "Nati", "Marcus", "Intensiped", "Lais", "Mariana", "Camila", "Elisa", "Silvana", "Adriana", "Roberta", "Marilia"];
 
 const WEEKDAY_PT = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
 
