@@ -49,9 +49,21 @@ function hasOverride(v) {
   return v !== "" && v !== null && v !== undefined && !isNaN(parseFloat(v));
 }
 
-function shiftValue(horas, isWeekend, valorOverride, rateWeekday, rateWeekend) {
+function personRateMap(personRates) {
+  const map = {};
+  (personRates || []).forEach((r) => {
+    if (r.pessoa && r.pessoa.trim() && r.rate !== "" && r.rate !== null && !isNaN(parseFloat(r.rate))) {
+      map[r.pessoa.trim()] = parseFloat(r.rate);
+    }
+  });
+  return map;
+}
+
+function shiftValue(pessoa, horas, isWeekend, valorOverride, rateWeekday, rateWeekend, rateMap) {
   if (hasOverride(valorOverride)) return parseFloat(valorOverride);
   const h = parseFloat(horas) || 0;
+  const custom = rateMap[(pessoa || "").trim()];
+  if (custom !== undefined) return h * custom;
   return h * (isWeekend ? rateWeekend : rateWeekday);
 }
 
@@ -97,6 +109,15 @@ function stripAccents(s) {
   return String(s == null ? "" : s)
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    return fallback;
+  }
 }
 
 class ErrorBoundary extends React.Component {
@@ -145,8 +166,9 @@ export default function EscalaUtiBApp() {
   const [form, setForm] = useState(emptyForm(yesterday()));
   const [saveMsg, setSaveMsg] = useState("");
   const [saving, setSaving] = useState(false);
-  const [rateWeekday, setRateWeekday] = useState(125);
-  const [rateWeekend, setRateWeekend] = useState(141.67);
+  const [rateWeekday, setRateWeekday] = useState(() => loadJSON("escala:rateWeekday", 125));
+  const [rateWeekend, setRateWeekend] = useState(() => loadJSON("escala:rateWeekend", 141.67));
+  const [personRates, setPersonRates] = useState(() => loadJSON("escala:personRates", []));
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
@@ -154,20 +176,42 @@ export default function EscalaUtiBApp() {
   const [periodStart, setPeriodStart] = useState(firstDayOfMonth(0));
   const [periodEnd, setPeriodEnd] = useState(lastDayOfMonth(0));
 
+  useEffect(() => {
+    try {
+      localStorage.setItem("escala:rateWeekday", JSON.stringify(rateWeekday));
+    } catch (e) {}
+  }, [rateWeekday]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("escala:rateWeekend", JSON.stringify(rateWeekend));
+    } catch (e) {}
+  }, [rateWeekend]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("escala:personRates", JSON.stringify(personRates));
+    } catch (e) {}
+  }, [personRates]);
+
   const loadAll = useCallback(() => {
     setLoading(true);
     try {
       const loaded = {};
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && k.startsWith("escala:")) {
+        const isConfigKey =
+          k === "escala:rateWeekday" || k === "escala:rateWeekend" || k === "escala:personRates";
+        if (k && k.startsWith("escala:") && !isConfigKey) {
           try {
             const raw = localStorage.getItem(k);
             if (raw) {
               const parsed = migrateEntry(JSON.parse(raw));
               loaded[parsed.date] = parsed;
             }
-          } catch (e) {}
+          } catch (e) {
+            // skip unreadable key
+          }
         }
       }
       setEntries(loaded);
@@ -237,7 +281,9 @@ export default function EscalaUtiBApp() {
     });
     try {
       localStorage.removeItem(`escala:${date}`);
-    } catch (e) {}
+    } catch (e) {
+      // ignore
+    }
   }
 
   async function handleCopyDay() {
@@ -300,6 +346,7 @@ export default function EscalaUtiBApp() {
 
   const sortedDates = Object.keys(filteredEntries).sort((a, b) => (a < b ? 1 : -1));
 
+  const rateMap = personRateMap(personRates);
   const summary = {};
   const personDetails = {};
 
@@ -308,10 +355,11 @@ export default function EscalaUtiBApp() {
     const key = pessoa.trim();
     if (!personDetails[key]) personDetails[key] = [];
     personDetails[key].push({ date, dow, unidade, turno, horas, valor, isWeekend });
-    if (!summary[key]) summary[key] = { semana: 0, fds: 0, valor: 0 };
+    if (!summary[key]) summary[key] = { semana: 0, fds: 0, valor: 0, utiA: 0 };
     if (isWeekend) summary[key].fds += horas;
     else summary[key].semana += horas;
     summary[key].valor += valor;
+    if (unidade === "UTI A") summary[key].utiA += horas;
   }
 
   Object.values(filteredEntries).forEach((entry) => {
@@ -320,13 +368,13 @@ export default function EscalaUtiBApp() {
       const roleData = entry[r.key];
       if (!roleData || !roleData.pessoa || !roleData.pessoa.trim()) return;
       const horas = parseFloat(roleData.horas) || 0;
-      const valor = shiftValue(horas, isWeekend, roleData.valorOverride, rateWeekday, rateWeekend);
+      const valor = shiftValue(roleData.pessoa, horas, isWeekend, roleData.valorOverride, rateWeekday, rateWeekend, rateMap);
       pushDetail(roleData.pessoa, entry.date, dowName, "UTI B", r.label, horas, valor, isWeekend);
     });
     (entry.utiA || []).forEach((row) => {
       const horas = rowHours(row);
       if (isNaN(horas)) return;
-      const valor = shiftValue(horas, isWeekend, row.valorOverride, rateWeekday, rateWeekend);
+      const valor = shiftValue(row.pessoa, horas, isWeekend, row.valorOverride, rateWeekday, rateWeekend, rateMap);
       pushDetail(row.pessoa, entry.date, dowName, "UTI A", row.turno || "—", horas, valor, isWeekend);
     });
   });
@@ -336,14 +384,15 @@ export default function EscalaUtiBApp() {
       pessoa,
       semana: v.semana,
       fds: v.fds,
+      utiA: v.utiA,
       total: v.semana + v.fds,
       valor: v.valor,
     }))
     .sort((a, b) => b.total - a.total);
 
   const grandTotal = summaryRows.reduce(
-    (acc, r) => ({ horas: acc.horas + r.total, valor: acc.valor + r.valor }),
-    { horas: 0, valor: 0 }
+    (acc, r) => ({ horas: acc.horas + r.total, valor: acc.valor + r.valor, utiA: acc.utiA + r.utiA }),
+    { horas: 0, valor: 0, utiA: 0 }
   );
 
   const periodLabel =
@@ -456,6 +505,8 @@ export default function EscalaUtiBApp() {
                 rateWeekend={rateWeekend}
                 setRateWeekday={setRateWeekday}
                 setRateWeekend={setRateWeekend}
+                personRates={personRates}
+                setPersonRates={setPersonRates}
               />
             </>
           )}
@@ -938,6 +989,8 @@ function exportAllPdf(personDetails, periodLabel) {
   people.forEach((pessoa, idx) => {
     if (idx > 0) doc.addPage();
     const rows = [...personDetails[pessoa]].sort((a, b) => (a.date < b.date ? -1 : 1));
+    const utiARows = rows.filter((r) => r.unidade === "UTI A");
+
     doc.setFontSize(16);
     doc.setTextColor(15, 23, 42);
     doc.text(stripAccents(pessoa), 14, 15);
@@ -967,17 +1020,95 @@ function exportAllPdf(personDetails, periodLabel) {
 
     const totalHoras = rows.reduce((a, r) => a + r.horas, 0);
     const totalValor = rows.reduce((a, r) => a + r.valor, 0);
-    const finalY = (doc.lastAutoTable ? doc.lastAutoTable.finalY : 26) + 8;
+    const utiAHoras = utiARows.reduce((a, r) => a + r.horas, 0);
+    const utiAValor = utiARows.reduce((a, r) => a + r.valor, 0);
+
+    let cursorY = (doc.lastAutoTable ? doc.lastAutoTable.finalY : 26) + 8;
     doc.setFontSize(11);
     doc.setTextColor(15, 118, 110);
-    doc.text(`Total: ${totalHoras}h  ->  ${fmtMoney(totalValor)}`, 14, finalY);
+    doc.text(`Total: ${totalHoras}h (${utiAHoras}h em UTI A)  ->  ${fmtMoney(totalValor)}`, 14, cursorY);
+
+    if (utiARows.length > 0) {
+      cursorY += 8;
+      doc.setFontSize(10);
+      doc.setTextColor(15, 23, 42);
+      doc.text("Coberturas UTI A neste período", 14, cursorY);
+      autoTable(doc, {
+        startY: cursorY + 3,
+        head: [["Data", "Dia da semana", "Turno", "Horas", "Valor"]],
+        body: utiARows.map((r) => [
+          dateInfo(r.date).display,
+          stripAccents(r.dow),
+          stripAccents(r.turno),
+          `${r.horas}h`,
+          fmtMoney(r.valor),
+        ]),
+        styles: { fontSize: 8, cellPadding: 2 },
+        headStyles: { fillColor: [217, 119, 6], textColor: 255 },
+        foot: [["", "", "Subtotal UTI A", `${utiAHoras}h`, fmtMoney(utiAValor)]],
+        footStyles: { fillColor: [255, 251, 235], textColor: [120, 53, 15], fontStyle: "bold" },
+      });
+    }
   });
   const safeLabel = stripAccents(periodLabel).replace(/[^\w-]+/g, "_");
   doc.save(`escala-uti-b_${safeLabel}.pdf`);
   return true;
 }
 
-function Resumo({ summaryRows, grandTotal, personDetails, periodLabel, rateWeekday, rateWeekend, setRateWeekday, setRateWeekend }) {
+function PersonRatesEditor({ personRates, setPersonRates }) {
+  function addRow() {
+    setPersonRates((pr) => [...pr, { id: Date.now() + Math.random(), pessoa: "", rate: "" }]);
+  }
+  function updateRow(id, field, value) {
+    setPersonRates((pr) => pr.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
+  }
+  function removeRow(id) {
+    setPersonRates((pr) => pr.filter((r) => r.id !== id));
+  }
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs tracking-wider uppercase text-teal-700 font-bold">Taxas especiais por pessoa</div>
+        <button
+          type="button"
+          onClick={addRow}
+          className="flex items-center gap-1 text-xs font-semibold text-slate-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-md"
+        >
+          <Plus size={13} /> Adicionar
+        </button>
+      </div>
+      <p className="text-xs text-slate-400 mb-2">
+        Pessoas listadas aqui usam este valor fixo por hora em qualquer dia (ignora semana/fim de semana). Um "valor
+        manual" lançado num plantão específico ainda tem prioridade sobre isso.
+      </p>
+      {personRates.length === 0 ? (
+        <div className="text-sm text-slate-400 py-2 text-center">Nenhuma taxa especial definida.</div>
+      ) : (
+        <div className="space-y-2">
+          {personRates.map((r) => (
+            <div key={r.id} className="flex items-center gap-2">
+              <div className="flex-1">
+                <PersonPicker value={r.pessoa} onChange={(v) => updateRow(r.id, "pessoa", v)} inputBg="bg-white" />
+              </div>
+              <input
+                type="number"
+                value={r.rate}
+                onChange={(e) => updateRow(r.id, "rate", e.target.value)}
+                placeholder="R$/h"
+                className="w-24 border border-slate-200 rounded-md px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
+              />
+              <button type="button" onClick={() => removeRow(r.id)} className="text-rose-500 hover:text-rose-700 p-1">
+                <Trash2 size={16} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Resumo({ summaryRows, grandTotal, personDetails, periodLabel, rateWeekday, rateWeekend, setRateWeekday, setRateWeekend, personRates, setPersonRates }) {
   return (
     <div className="space-y-4">
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
@@ -1002,15 +1133,17 @@ function Resumo({ summaryRows, grandTotal, personDetails, periodLabel, rateWeekd
             />
           </div>
         </div>
-        <p className="text-xs text-slate-400 mt-2">
-          Plantões com "valor manual" marcado usam o valor combinado, ignorando essas taxas.
-        </p>
+        <p className="text-xs text-slate-400 mt-2">Vale para quem não tem taxa especial nem valor manual no plantão.</p>
       </div>
+
+      <PersonRatesEditor personRates={personRates} setPersonRates={setPersonRates} />
 
       <div className="bg-teal-700 rounded-xl shadow-sm p-4 text-white">
         <div className="text-xs tracking-wider uppercase text-teal-200 font-bold mb-1">Total geral do período</div>
         <div className="flex items-end justify-between">
-          <span className="text-sm text-teal-100">{grandTotal.horas}h no total</span>
+          <span className="text-sm text-teal-100">
+            {grandTotal.horas}h no total ({grandTotal.utiA}h em UTI A)
+          </span>
           <span className="text-2xl font-bold tabular-nums">{fmtMoney(grandTotal.valor)}</span>
         </div>
       </div>
@@ -1039,12 +1172,18 @@ function Resumo({ summaryRows, grandTotal, personDetails, periodLabel, rateWeekd
                   <span className="font-semibold text-slate-900">{row.pessoa}</span>
                   <span className="font-bold text-slate-800 tabular-nums">{fmtMoney(row.valor)}</span>
                 </div>
-                <div className="flex items-center gap-3 text-xs text-slate-400 tabular-nums">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-400 tabular-nums">
                   <span>Semana: {row.semana}h</span>
                   <span>·</span>
                   <span>Fim de semana: {row.fds}h</span>
                   <span>·</span>
                   <span className="font-medium text-slate-500">Total: {row.total}h</span>
+                  {row.utiA > 0 && (
+                    <>
+                      <span>·</span>
+                      <span className="font-medium text-amber-600">UTI A: {row.utiA}h</span>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
@@ -1052,8 +1191,8 @@ function Resumo({ summaryRows, grandTotal, personDetails, periodLabel, rateWeekd
         )}
       </div>
       <p className="text-xs text-slate-400 px-1">
-        Cálculo: sábado, domingo e turnos marcados como "valor manual" seguem a combinação específica. Os demais usam as
-        taxas padrão acima. Ajuste manualmente para sexta à noite, feriados ou combinações especiais.
+        Ordem de prioridade do valor: 1) valor manual no plantão, 2) taxa especial da pessoa, 3) taxa padrão de
+        semana/fim de semana acima.
       </p>
     </div>
   );
