@@ -832,45 +832,109 @@ function UtiARow({ row, onChange, onRemove }) {
 
 function exportHistoricoPdf(sortedDates, entries, periodLabel) {
   if (sortedDates.length === 0) return false;
-  const doc = new jsPDF({ orientation: "landscape" });
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const marginX = 14;
+  const contentWidth = pageWidth - marginX * 2;
+  const lineHeight = 6;
+  const headerHeight = 9;
+  let cursorY = 18;
+
+  doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
   doc.setTextColor(15, 23, 42);
-  doc.text("Escala UTI B", 14, 15);
+  doc.text("Escala UTI B", marginX, cursorY);
+  cursorY += 6;
+  doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.setTextColor(100, 116, 139);
-  doc.text(stripAccents(periodLabel), 14, 21);
+  doc.text(stripAccents(periodLabel), marginX, cursorY);
+  cursorY += 8;
 
   const orderedDates = [...sortedDates].sort();
-  const rowsMeta = orderedDates.map((date) => {
+
+  orderedDates.forEach((date) => {
     const entry = entries[date];
     const info = dateInfo(date);
-    const cell = (key) => {
-      const r = entry[key];
-      if (!r || !r.pessoa || !r.pessoa.trim()) return "-";
-      return `${stripAccents(r.pessoa)} (${r.horas}h)`;
-    };
+    const filledRoles = ROLES.filter((r) => entry[r.key] && entry[r.key].pessoa && entry[r.key].pessoa.trim());
     const utiARows = (entry.utiA || []).filter((r) => r.pessoa && r.pessoa.trim());
-    const utiA =
-      utiARows
-        .map((r) => `${stripAccents(r.pessoa)} - ${stripAccents(r.turno || "")} (${rowHours(r)}h)`)
-        .join("; ") || "-";
-    return {
-      cells: [info.display, stripAccents(info.dowName), cell("diarismo"), cell("manha"), cell("tarde"), cell("noite"), utiA],
-      isWeekend: info.isWeekend,
-    };
-  });
+    const linesCount = filledRoles.length + (utiARows.length > 0 ? utiARows.length + 1 : 0);
+    const effectiveLines = linesCount === 0 ? 1 : linesCount;
+    const boxHeight = 15 + (effectiveLines - 1) * lineHeight;
 
-  autoTable(doc, {
-    startY: 26,
-    head: [["Data", "Dia", "Diarismo", "Manhã", "Tarde", "Noite", "UTI A"]],
-    body: rowsMeta.map((r) => r.cells),
-    styles: { fontSize: 7.5, cellPadding: 2 },
-    headStyles: { fillColor: [15, 23, 42], textColor: 255 },
-    didParseCell: (data) => {
-      if (data.section === "body" && rowsMeta[data.row.index] && rowsMeta[data.row.index].isWeekend) {
-        data.cell.styles.fillColor = [220, 252, 231];
+    if (cursorY + boxHeight > pageHeight - 14) {
+      doc.addPage();
+      cursorY = 18;
+    }
+
+    const boxTop = cursorY;
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.setLineWidth(0.2);
+    doc.roundedRect(marginX, boxTop, contentWidth, boxHeight, 2, 2, "FD");
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(15, 23, 42);
+    doc.text(info.display, marginX + 4, boxTop + 6.5);
+
+    const badgeText = stripAccents(info.dowName);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    const badgeTextWidth = doc.getTextWidth(badgeText);
+    const badgeWidth = badgeTextWidth + 6;
+    const badgeX = marginX + 4 + doc.getTextWidth(info.display) + 5;
+    if (info.isWeekend) {
+      doc.setFillColor(209, 250, 229);
+      doc.setTextColor(4, 120, 87);
+    } else {
+      doc.setFillColor(241, 245, 249);
+      doc.setTextColor(71, 85, 105);
+    }
+    doc.roundedRect(badgeX, boxTop + 3, badgeWidth, 5, 1.5, 1.5, "F");
+    doc.text(badgeText, badgeX + 3, boxTop + 6.5);
+
+    let lineY = boxTop + headerHeight + 2;
+    doc.setDrawColor(226, 232, 240);
+    doc.line(marginX + 4, lineY - 3, marginX + contentWidth - 4, lineY - 3);
+
+    if (filledRoles.length === 0 && utiARows.length === 0) {
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(9);
+      doc.setTextColor(148, 163, 184);
+      doc.text("Sem lançamentos.", marginX + 4, lineY);
+      doc.setFont("helvetica", "normal");
+    } else {
+      filledRoles.forEach((r) => {
+        const roleData = entry[r.key];
+        doc.setFontSize(9);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`${stripAccents(r.label)} (${roleData.horas}h)`, marginX + 4, lineY);
+        doc.setTextColor(15, 23, 42);
+        const pessoaText = stripAccents(roleData.pessoa);
+        doc.text(pessoaText, marginX + contentWidth - 4 - doc.getTextWidth(pessoaText), lineY);
+        lineY += lineHeight;
+      });
+
+      if (utiARows.length > 0) {
+        doc.setFontSize(7.5);
+        doc.setTextColor(148, 163, 184);
+        doc.text("UTI A", marginX + 4, lineY);
+        lineY += lineHeight - 1;
+        utiARows.forEach((row) => {
+          doc.setFontSize(9);
+          doc.setTextColor(100, 116, 139);
+          doc.text(`${stripAccents(row.turno || "-")} (${rowHours(row)}h)`, marginX + 4, lineY);
+          doc.setTextColor(15, 23, 42);
+          const pessoaText = stripAccents(row.pessoa);
+          doc.text(pessoaText, marginX + contentWidth - 4 - doc.getTextWidth(pessoaText), lineY);
+          lineY += lineHeight;
+        });
       }
-    },
+    }
+
+    cursorY = boxTop + boxHeight + 4;
   });
 
   const safeLabel = stripAccents(periodLabel).replace(/[^\w-]+/g, "_");
