@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, Trash2, Save, Pencil, ClipboardList, Table2, CalendarDays, Check, X, Loader2, FileDown } from "lucide-react";
+import { Plus, Trash2, Save, Pencil, ClipboardList, Table2, CalendarDays, Check, X, Loader2, FileDown, Share2 } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
@@ -942,8 +942,63 @@ function exportHistoricoPdf(sortedDates, entries, periodLabel) {
   return true;
 }
 
+function buildHistoricoText(sortedDates, entries, periodLabel) {
+  const orderedDates = [...sortedDates].sort();
+  let text = `*Escala UTI B*\n${periodLabel}\n\n`;
+  let any = false;
+
+  orderedDates.forEach((date) => {
+    const entry = entries[date];
+    const info = dateInfo(date);
+    const filledRoles = ROLES.filter((r) => entry[r.key] && entry[r.key].pessoa && entry[r.key].pessoa.trim());
+    const utiARows = (entry.utiA || []).filter((r) => r.pessoa && r.pessoa.trim());
+    if (filledRoles.length === 0 && utiARows.length === 0) return;
+
+    any = true;
+    text += `*${info.display} (${info.dowName})*\n`;
+    filledRoles.forEach((r) => {
+      const roleData = entry[r.key];
+      text += `${r.label} (${roleData.horas}h): ${roleData.pessoa}\n`;
+    });
+    if (utiARows.length > 0) {
+      text += `UTI A:\n`;
+      utiARows.forEach((row) => {
+        text += `  ${row.turno || "-"} (${rowHours(row)}h): ${row.pessoa}\n`;
+      });
+    }
+    text += `\n`;
+  });
+
+  return any ? text.trim() : "";
+}
+
 function Historico({ sortedDates, entries, periodLabel, onEdit, onDelete, onExport, onImport, showExport, showImport, importText, setImportText, handleImportAll, ioMsg, exportText }) {
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [textMsg, setTextMsg] = useState("");
+
+  async function handleShareText() {
+    const text = buildHistoricoText(sortedDates, entries, periodLabel);
+    if (!text) {
+      setTextMsg("Nenhum dado para exportar neste período.");
+      setTimeout(() => setTextMsg(""), 4000);
+      return;
+    }
+    if (navigator.share) {
+      try {
+        await navigator.share({ text, title: "Escala UTI B" });
+        return;
+      } catch (e) {
+        return;
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setTextMsg("Texto copiado! Cole no WhatsApp.");
+    } catch (e) {
+      setTextMsg("Não foi possível copiar automaticamente.");
+    }
+    setTimeout(() => setTextMsg(""), 5000);
+  }
 
   return (
     <div className="space-y-3">
@@ -956,6 +1011,17 @@ function Historico({ sortedDates, entries, periodLabel, onEdit, onDelete, onExpo
         <FileDown size={16} />
         Exportar PDF da escala
       </button>
+
+      <button
+        type="button"
+        onClick={handleShareText}
+        disabled={sortedDates.length === 0}
+        className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-semibold py-3 rounded-xl shadow-sm transition-colors"
+      >
+        <Share2 size={16} />
+        Compartilhar texto (WhatsApp)
+      </button>
+      {textMsg && <div className="text-xs text-center text-teal-700 font-medium">{textMsg}</div>}
 
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
         <div className="text-xs tracking-wider uppercase text-teal-700 font-bold mb-2">Backup manual</div>
@@ -1319,4 +1385,4 @@ function Resumo({ summaryRows, grandTotal, personDetails, periodLabel, rateWeekd
       </p>
     </div>
   );
-}
+}    
