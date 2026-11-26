@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, Trash2, Save, Pencil, ClipboardList, Table2, CalendarDays, Check, X, Loader2, FileDown, Share2 } from "lucide-react";
+import { Plus, Trash2, Save, Pencil, ClipboardList, Table2, CalendarDays, Check, X, Loader2, FileDown, Share2, Download, Upload } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
@@ -159,6 +159,12 @@ function lastDayOfMonth(offset) {
   return toISODate(d);
 }
 
+function backupFilename() {
+  const d = new Date();
+  const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}_${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+  return `escala-uti-b-backup_${stamp}.json`;
+}
+
 export default function EscalaUtiBApp() {
   const [tab, setTab] = useState("novo");
   const [entries, setEntries] = useState({});
@@ -300,15 +306,66 @@ export default function EscalaUtiBApp() {
 
   async function handleExportAll() {
     const text = JSON.stringify(entries, null, 2);
+    const filename = backupFilename();
+    setShowImport(false);
+
+    // 1) Tenta o menu nativo de compartilhar/salvar (melhor no celular)
+    try {
+      const file = new File([text], filename, { type: "application/json" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "Backup Escala UTI B" });
+        setShowExport(false);
+        setIoMsg("Arquivo de backup enviado/salvo com sucesso.");
+        setTimeout(() => setIoMsg(""), 6000);
+        return;
+      }
+    } catch (e) {
+      // usuário cancelou o compartilhamento ou falhou — segue para o download direto
+    }
+
+    // 2) Baixa o arquivo .json diretamente
+    try {
+      const blob = new Blob([text], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      setShowExport(false);
+      setIoMsg(`Arquivo "${filename}" baixado. Ele fica na pasta Downloads do celular.`);
+      setTimeout(() => setIoMsg(""), 8000);
+      return;
+    } catch (e) {
+      // segue para o último fallback
+    }
+
+    // 3) Último recurso: copiar texto / mostrar na caixa de texto
     try {
       await navigator.clipboard.writeText(text);
-      setIoMsg("Backup copiado! Cole em um app de notas para guardar.");
+      setIoMsg("Não foi possível baixar o arquivo — texto copiado. Cole em um app de notas.");
     } catch (e) {
-      setIoMsg("Não copiou automaticamente — selecione e copie o texto abaixo manualmente.");
+      setIoMsg("Não foi possível baixar nem copiar automaticamente — selecione e copie o texto abaixo.");
     }
     setShowExport(true);
-    setShowImport(false);
-    setTimeout(() => setIoMsg(""), 6000);
+    setTimeout(() => setIoMsg(""), 8000);
+  }
+
+  function handleImportFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setImportText(String(reader.result || ""));
+      setIoMsg(`Arquivo "${file.name}" carregado. Confira e toque em Importar.`);
+      setTimeout(() => setIoMsg(""), 6000);
+    };
+    reader.onerror = () => {
+      setIoMsg("Não foi possível ler esse arquivo.");
+      setTimeout(() => setIoMsg(""), 6000);
+    };
+    reader.readAsText(file);
   }
 
   function handleImportAll() {
@@ -321,12 +378,17 @@ export default function EscalaUtiBApp() {
       Object.entries(parsed).forEach(([date, entry]) => {
         migrated[date] = migrateEntry(entry);
       });
+      Object.entries(migrated).forEach(([date, entry]) => {
+        try {
+          localStorage.setItem(`escala:${date}`, JSON.stringify(entry));
+        } catch (e) {}
+      });
       setEntries((e) => ({ ...e, ...migrated }));
       setIoMsg(`Importado! ${Object.keys(migrated).length} dia(s) adicionado(s)/atualizado(s).`);
       setImportText("");
       setShowImport(false);
     } catch (e) {
-      setIoMsg("Não consegui ler esse texto. Confira se colou o backup completo e correto.");
+      setIoMsg("Não consegui ler esse arquivo/texto. Confira se é o backup completo e correto.");
     }
     setTimeout(() => setIoMsg(""), 6000);
   }
@@ -485,6 +547,7 @@ export default function EscalaUtiBApp() {
                 importText={importText}
                 setImportText={setImportText}
                 handleImportAll={handleImportAll}
+                handleImportFile={handleImportFile}
                 ioMsg={ioMsg}
                 exportText={JSON.stringify(entries, null, 2)}
               />
@@ -972,7 +1035,7 @@ function buildHistoricoText(sortedDates, entries, periodLabel) {
   return any ? text.trim() : "";
 }
 
-function Historico({ sortedDates, entries, periodLabel, onEdit, onDelete, onExport, onImport, showExport, showImport, importText, setImportText, handleImportAll, ioMsg, exportText }) {
+function Historico({ sortedDates, entries, periodLabel, onEdit, onDelete, onExport, onImport, showExport, showImport, importText, setImportText, handleImportAll, handleImportFile, ioMsg, exportText }) {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [textMsg, setTextMsg] = useState("");
 
@@ -1033,29 +1096,49 @@ function Historico({ sortedDates, entries, periodLabel, onEdit, onDelete, onExpo
           <button
             type="button"
             onClick={onExport}
-            className="flex-1 text-xs font-semibold text-slate-900 bg-slate-100 hover:bg-slate-200 py-2 rounded-md"
+            className="flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-900 bg-slate-100 hover:bg-slate-200 py-2 rounded-md"
           >
-            Exportar backup
+            <Download size={13} /> Baixar backup (arquivo)
           </button>
           <button
             type="button"
             onClick={onImport}
-            className="flex-1 text-xs font-semibold text-slate-900 bg-slate-100 hover:bg-slate-200 py-2 rounded-md"
+            className="flex-1 flex items-center justify-center gap-1.5 text-xs font-semibold text-slate-900 bg-slate-100 hover:bg-slate-200 py-2 rounded-md"
           >
-            Importar backup
+            <Upload size={13} /> Importar backup
           </button>
         </div>
         {ioMsg && <div className="mt-2 text-xs font-medium text-teal-700">{ioMsg}</div>}
         {showExport && (
-          <textarea
-            readOnly
-            value={exportText}
-            onFocus={(e) => e.target.select()}
-            className="w-full mt-3 h-32 text-xs font-mono bg-slate-50 border border-slate-200 rounded-md p-2"
-          />
+          <div className="mt-3 space-y-1.5">
+            <p className="text-xs text-slate-400">
+              Não foi possível baixar automaticamente — copie o texto abaixo e cole em um app de notas como reserva:
+            </p>
+            <textarea
+              readOnly
+              value={exportText}
+              onFocus={(e) => e.target.select()}
+              className="w-full h-32 text-xs font-mono bg-slate-50 border border-slate-200 rounded-md p-2"
+            />
+          </div>
         )}
         {showImport && (
           <div className="mt-3 space-y-2">
+            <label className="flex items-center justify-center gap-1.5 text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 py-2 rounded-md cursor-pointer">
+              <Upload size={13} />
+              Escolher arquivo de backup (.json)
+              <input
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files && e.target.files[0];
+                  handleImportFile(file);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+            <p className="text-xs text-slate-400 text-center">ou cole o texto do backup manualmente abaixo</p>
             <textarea
               value={importText}
               onChange={(e) => setImportText(e.target.value)}
@@ -1065,7 +1148,8 @@ function Historico({ sortedDates, entries, periodLabel, onEdit, onDelete, onExpo
             <button
               type="button"
               onClick={handleImportAll}
-              className="w-full text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 py-2 rounded-md"
+              disabled={!importText.trim()}
+              className="w-full text-xs font-semibold text-white bg-teal-700 hover:bg-teal-800 disabled:opacity-40 py-2 rounded-md"
             >
               Importar
             </button>
@@ -1385,4 +1469,4 @@ function Resumo({ summaryRows, grandTotal, personDetails, periodLabel, rateWeekd
       </p>
     </div>
   );
-}    
+}
